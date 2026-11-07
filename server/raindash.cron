@@ -1,0 +1,2 @@
+# /etc/cron.d/raindash - re-render both charts every 10 minutes
+*/10 * * * * raindash /usr/bin/python3 /opt/raindash/render.py /var/www/raindash >> /var/log/raindash/render.log 2>&1

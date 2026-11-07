@@ -1,0 +1,13 @@
+{
+  "items": [
+    {
+      "name": "Rain Dash",
+      "priority": 0,
+      "items": [
+        { "name": "Start dashboard", "priority": 1, "action": "./start.sh", "exitmenu": true },
+        { "name": "Stop dashboard", "priority": 2, "action": "./stop.sh", "exitmenu": true },
+        { "name": "Test: show one image now", "priority": 3, "action": "./test.sh" }
+      ]
+    }
+  ]
+}

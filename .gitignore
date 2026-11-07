@@ -1,0 +1,5 @@
+__pycache__/
+rain-*.png
+*.tmp
+kindle/raindash/log.txt
+kindle/raindash/debug.txt

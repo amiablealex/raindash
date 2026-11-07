@@ -1,0 +1,14 @@
+# /etc/nginx/sites-available/raindash
+# Plain HTTP on purpose: the Kindle can't do modern TLS. It only serves two PNGs.
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    root /var/www/raindash;
+    location = /rain-lincoln.png     { add_header Cache-Control "no-cache"; }
+    location = /rain-basingstoke.png { add_header Cache-Control "no-cache"; }
+    location / { return 404; }
+
+    access_log off;
+}
