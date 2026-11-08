@@ -47,8 +47,11 @@ SS = 2                           # supersample factor for smooth edges
 # Y axis: square-root scale so drizzle is visible but a downpour fills the chart.
 Y_MAX = 8.0                      # mm/h - anything above is clipped to the top
 Y_TICKS = [(0.5, "0.5"), (1, "1"), (2, "2"), (4, "4"), (8, "8")]
-LIGHT, HEAVY = 0.5, 4.0          # Met Office light / heavy rain thresholds, mm/h
-WET = 0.1                        # mm/h considered "raining" for the headline
+LIGHT, HEAVY = 0.5, 4.0          # gridline labels on the chart, mm/h
+
+# Headline bands, mm/h. Below the first threshold the headline treats it as dry
+# (the chart still draws it). Tune these if the wording feels off.
+BANDS = [(0.2, "drizzle"), (0.5, "light rain"), (2.0, "rain"), (4.0, "heavy rain")]
 
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 
@@ -58,10 +61,20 @@ def fetch(now, lat, lon):
     url = (
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat}&longitude={lon}&hourly=precipitation"
+        "&current=temperature_2m,apparent_temperature"
         f"&models={MODEL}&timezone={TZ.replace('/', '%2F')}&forecast_days=3"
     )
     with urllib.request.urlopen(url, timeout=20) as r:
-        data = json.load(r)["hourly"]
+        resp = json.load(r)
+    data, cur = resp["hourly"], resp.get("current", {})
+    temps = (cur.get("temperature_2m"), cur.get("apparent_temperature"))
+    if None in temps:
+        # the UKMO model may not provide these; fall back to Open-Meteo's default blend
+        url = (f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+               "&current=temperature_2m,apparent_temperature")
+        with urllib.request.urlopen(url, timeout=20) as r:
+            cur = json.load(r).get("current", {})
+        temps = (cur.get("temperature_2m"), cur.get("apparent_temperature"))
     tz = ZoneInfo(TZ)
     pts = []
     for t, mm in zip(data["time"], data["precipitation"]):
@@ -69,7 +82,7 @@ def fetch(now, lat, lon):
         # centre each value on the middle of the hour it describes.
         ts = datetime.fromisoformat(t).replace(tzinfo=tz) - timedelta(minutes=30)
         pts.append((ts, mm or 0.0))
-    return window(pts, now)
+    return window(pts, now) + ((temps if None not in temps else None),)
 
 
 def demo(now):
@@ -81,7 +94,7 @@ def demo(now):
         mm = 3.6 * math.exp(-((h - 7) / 2.2) ** 2) + 0.9 * math.exp(-((h - 15) / 1.2) ** 2)
         mm += 0.35 * math.exp(-((h - 20) / 0.9) ** 2)
         pts.append((start + timedelta(hours=i, minutes=30), round(mm, 2)))
-    return window(pts, now)
+    return window(pts, now) + ((9.4, 6.2),)
 
 
 def window(pts, now):
@@ -147,20 +160,51 @@ def monotone(xs, ys, steps=8):
 
 
 # ---- headline ---------------------------------------------------------------
+def band(mm):
+    """-1 for dry, else the index of the heaviest band reached."""
+    return max((i for i, (lo, _) in enumerate(BANDS) if mm >= lo), default=-1)
+
+
 def headline(pts, now, end):
-    hourly = [(t, mm) for t, mm in pts if now - timedelta(minutes=30) <= t <= end]
-    wet = [mm >= WET for _, mm in hourly]
-    if not any(wet):
+    # one value per hour; [0] is the current hour. Times are hour starts.
+    hours = [(t - timedelta(minutes=30), band(mm)) for t, mm in pts
+             if now - timedelta(minutes=30) <= t <= end]
+    hh = lambda t: t.strftime("%H:%M")
+    name = lambda b: BANDS[b][1].capitalize()
+
+    if all(b < 0 for _, b in hours):
         return "Dry for the next 24 hours"
-    peak = max(mm for _, mm in hourly)
-    kind = "Heavy rain" if peak >= HEAVY else "Rain" if peak >= LIGHT else "Light rain"
-    if wet[0]:
-        for (t, _), w in zip(hourly, wet):
-            if not w:
-                return f"Raining now, dry by {(t - timedelta(minutes=30)).strftime('%H:%M')}"
-        return "Raining for the next 24 hours"
-    first = next(t for (t, _), w in zip(hourly, wet) if w)
-    return f"{kind} from {(first - timedelta(minutes=30)).strftime('%H:%M')}"
+    if all(b >= 0 for _, b in hours):
+        peak_t, peak = max(hours, key=lambda h: h[1])
+        return "Drizzly all day" if peak == 0 else f"Wet all day, heaviest at {hh(peak_t)}"
+
+    if hours[0][1] >= 0:                       # raining now
+        spell = []
+        for t, b in hours:
+            if b < 0:
+                break
+            spell.append((t, b))
+        now_b = hours[0][1]
+        peak = max(b for _, b in spell)
+        if peak >= 2 and peak > now_b:         # this spell gets properly heavier
+            when = next(t for t, b in spell if b > now_b)
+            lead = "Spitting now" if now_b == 0 else f"{name(now_b)} now"
+            return f"{lead}, heavier from {hh(when)}"
+        dry = hours[len(spell)][0]
+        lead = "Just spitting" if now_b == 0 else f"{name(now_b)} now"
+        return f"{lead}, dry by {hh(dry)}"
+
+    # dry now: describe the next spell by its peak
+    i = next(i for i, (_, b) in enumerate(hours) if b >= 0)
+    first = hours[i][0]
+    peak = 0
+    for _, b in hours[i:]:
+        if b < 0:
+            break
+        peak = max(peak, b)
+    if peak == 0:
+        return f"Chance of drizzle from {hh(first)}"
+    return f"{name(peak)} from {hh(first)}"
 
 
 # ---- drawing ----------------------------------------------------------------
@@ -172,31 +216,48 @@ def font(size, bold=False):
         return ImageFont.load_default(size * SS)
 
 
-def render(pts, now, end, out, place, bat=None):
+def render(pts, now, end, out, place, bat=None, temps=None):
     img = Image.new("L", (W * SS, H * SS), 255)
     g = ImageDraw.Draw(img)
     S = lambda v: int(round(v * SS))
 
     # plot area
-    L, R, T, B = 64, W - 24, 112, H - 56
+    L, R, T, B = 64, W - 24, 132, H - 56
     span = (end - now).total_seconds()
     xpx = lambda t: L + (R - L) * (t - now).total_seconds() / span
     ypx = lambda mm: B - (B - T) * math.sqrt(min(max(mm, 0), Y_MAX) / Y_MAX)
 
-    # header
-    g.text((S(L - 40), S(20)), headline(pts, now, end), font=font(34, True), fill=0)
-    status = f"updated {now:%H:%M}"
+    # header, right: big "feels like" temperature with the actual temp beneath
+    left = L - 40
+    head_right = R
+    if temps:
+        deg = lambda v: f"{round(v):d}°".replace("-", "\u2212") if round(v) != 0 else "0°"
+        g.text((S(R), S(4)), deg(temps[1]), font=font(84, True), fill=0, anchor="ra")
+        sub = f"feels like  ·  actual {deg(temps[0])}"
+        g.text((S(R), S(100)), sub, font=font(16), fill=85, anchor="ra")
+        big = g.textbbox((S(R), S(4)), deg(temps[1]), font=font(84, True), anchor="ra")
+        sub_w = g.textlength(sub, font=font(16)) / SS
+        head_right = R - max((big[2] - big[0]) / SS, sub_w) - 28
+
+    # header, left: headline (shrinks to fit beside the temperature) + status line
+    text = headline(pts, now, end)
+    size = 34
+    while size > 22 and g.textlength(text, font=font(size, True)) / SS > head_right - left:
+        size -= 1
+    g.text((S(left), S(20 + (34 - size) * 0.6)), text, font=font(size, True), fill=0)
+
+    status = f"{place}  ·  updated {now:%H:%M}"
     if bat:
         status += f"  ·  battery {bat[0]}%" + (" (charging)" if bat[1] else "")
-    g.text((S(R), S(66)), status, font=font(18), fill=85, anchor="ra")
     if bat and bat[0] < LOW_BATTERY and not bat[1]:
-        # low battery: swap the subtitle for a black banner that's hard to miss
+        # low battery: swap the status line for a black banner that's hard to miss
         msg = f"Low battery {bat[0]}% - please plug me in"
-        box = g.textbbox((S(L - 40), S(66)), msg, font=font(18, True))
+        box = g.textbbox((S(left), S(68)), msg, font=font(18, True))
         g.rectangle((box[0] - S(8), box[1] - S(5), box[2] + S(8), box[3] + S(5)), fill=0)
-        g.text((S(L - 40), S(66)), msg, font=font(18, True), fill=255)
+        g.text((S(left), S(68)), msg, font=font(18, True), fill=255)
     else:
-        g.text((S(L - 40), S(66)), f"{place}  ·  rain, mm per hour", font=font(18), fill=85)
+        g.text((S(left), S(68)), status, font=font(18), fill=85)
+    g.text((S(L - 10), S(T - 10)), "mm/h", font=font(14), fill=85, anchor="rb")
 
     # gridlines + y labels
     for mm, label in Y_TICKS:
@@ -251,11 +312,12 @@ def main():
     for slug, (place, lat, lon) in LOCATIONS.items():
         now = datetime.now(ZoneInfo(TZ))
         try:
-            pts, now, end = demo(now) if a.demo else fetch(now, lat, lon)
-            render(pts, now, end, os.path.join(a.outdir, f"rain-{slug}.png"), place)
+            pts, now, end, temps = demo(now) if a.demo else fetch(now, lat, lon)
+            render(pts, now, end, os.path.join(a.outdir, f"rain-{slug}.png"), place,
+                   temps=temps)
             if slug == KINDLE:
                 render(pts, now, end, os.path.join(a.outdir, "kindle.png"), place,
-                       battery(now, a.heartbeat))
+                       battery(now, a.heartbeat), temps)
         except Exception as e:  # one bad location shouldn't block the other
             print(f"{slug}: {e}", file=sys.stderr)
             failed = True

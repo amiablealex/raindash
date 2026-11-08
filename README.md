@@ -4,7 +4,7 @@ A 24-hour rain forecast chart for a jailbroken Kindle Touch, for leaving on a wi
 
 ![preview](preview.png)
 
-A server renders the chart as a PNG every 10 minutes. The Kindle downloads it over plain HTTP and draws it on the screen.
+A server renders the chart as a PNG every 10 minutes, with a plain-English headline ("Just spitting, dry by 15:00") and a large "feels like" temperature. The Kindle downloads it over plain HTTP and draws it on the screen.
 Rendering on the server keeps the Kindle side to a few lines of shell, and gets round the Kindle's outdated TLS
 (it can't fetch modern HTTPS).
 
