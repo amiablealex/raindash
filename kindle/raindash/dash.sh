@@ -30,7 +30,20 @@ wait_for_wifi() {
     return 0
 }
 
-log "started, refresh every ${REFRESH_MIN} min"
+VERSION=4
+
+# Battery % (digits only). Different firmware exposes it in different places.
+battery() {
+    b=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)
+    [ -z "$b" ] && b=$(gasgauge-info -s 2>/dev/null)
+    [ -z "$b" ] && b=$(cat /sys/devices/system/yoshi_battery/yoshi_battery0/battery_capacity 2>/dev/null)
+    echo "$b" | tr -cd '0-9'
+}
+charging() {
+    lipc-get-prop com.lab126.powerd isCharging 2>/dev/null | tr -cd '01'
+}
+
+log "started v$VERSION, refresh every ${REFRESH_MIN} min"
 sleep 3   # let KUAL close and the library finish drawing first
 
 while true; do
@@ -38,7 +51,9 @@ while true; do
     lipc-set-prop com.lab126.powerd preventScreenSaver 1
     lipc-set-prop com.lab126.pillow disableEnablePillow disable 2>/dev/null
 
-    if wait_for_wifi && wget -q -T 20 -O "$IMG.new" "$IMAGE_URL" && [ -s "$IMG.new" ]; then
+    # The query string is the heartbeat: the server logs it and draws the battery level.
+    URL="$IMAGE_URL?bat=$(battery)&chg=$(charging)&v=$VERSION"
+    if wait_for_wifi && wget -q -T 20 -O "$IMG.new" "$URL" && [ -s "$IMG.new" ]; then
         mv "$IMG.new" "$IMG"
         eips -f -g "$IMG"          # -f = full flashing refresh, clears ghosting
         log "ok"

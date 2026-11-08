@@ -18,11 +18,19 @@ python3 server/render.py /var/www/raindash        # writes rain-<location>.png
 ```
 
 Run it from cron every 10 minutes (`server/raindash.cron`) and serve the folder over HTTP (`server/raindash.nginx`).
-Locations, rotation and the y-axis scale are set at the top of `render.py`. Use `--demo` to render made-up data.
+Use `--demo` to render made-up data.
+
+Locations go in `server/locations.json` (copy `locations.example.json`). This file is gitignored, so precise
+coordinates stay off GitHub. One location is marked `"kindle"`, and that one is also written as `kindle.png`.
+
+Each time the Kindle fetches `kindle.png`, it adds its battery level to the request.
+nginx logs these requests to `/var/log/raindash/heartbeat.log`, which shows whether the Kindle is alive.
+The next render draws the battery level on the chart, with a warning below 20%.
+Rotation and the y-axis scale are set at the top of `render.py`.
 
 ## Kindle (Kindle Touch, jailbroken, with KUAL)
 
-1. Set `IMAGE_URL` in `kindle/raindash/config.sh`.
+1. Set `IMAGE_URL` in `kindle/raindash/config.sh` (normally `http://<server>/kindle.png`).
 2. Copy `kindle/raindash` to `extensions/raindash` on the Kindle.
 3. KUAL → Rain Dash → **Start dashboard**. Use **Stop dashboard** to stop it.
 

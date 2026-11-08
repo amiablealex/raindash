@@ -1,0 +1,7 @@
+{
+  "kindle": "basingstoke",
+  "locations": {
+    "lincoln": ["Lincoln", 53.23, -0.54],
+    "basingstoke": ["Basingstoke", 51.27, -1.09]
+  }
+}

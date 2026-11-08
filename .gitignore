@@ -3,3 +3,4 @@ rain-*.png
 *.tmp
 kindle/raindash/log.txt
 kindle/raindash/debug.txt
+server/locations.json

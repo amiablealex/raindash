@@ -2,12 +2,16 @@
 """
 Render a 24-hour precipitation chart as a Kindle-ready PNG.
 
-Runs on the Pi (cron, every 10 min). Fetches the Met Office UKV/Global blend
-from Open-Meteo, draws an 800x600 landscape chart, rotates it to the Kindle
-Touch's native 600x800 portrait framebuffer and writes an 8-bit greyscale PNG.
+Runs on the server (cron, every 10 min). For each location it fetches the Met
+Office UKV/Global blend from Open-Meteo, draws an 800x600 landscape chart,
+rotates it to the Kindle Touch's native 600x800 portrait framebuffer and writes
+an 8-bit greyscale PNG called rain-<slug>.png.
 
-    python3 render.py /var/www/raindash/rain.png
-    python3 render.py rain.png --demo        # synthetic data, no network
+It also writes kindle.png: the chart for the Kindle's location, plus the
+Kindle's battery level, read from the last heartbeat in the nginx log.
+
+    python3 render.py /var/www/raindash
+    python3 render.py . --demo               # synthetic data, no network
 
 Only dependency: Pillow (sudo apt install python3-pil fonts-dejavu-core)
 """
@@ -23,10 +27,16 @@ from zoneinfo import ZoneInfo
 from PIL import Image, ImageDraw, ImageFont
 
 # ---- config -----------------------------------------------------------------
+# Defaults. Override in locations.json next to this script (kept out of git,
+# so precise coordinates never end up in a public repo). See locations.example.json
 LOCATIONS = {                    # slug: (display name, lat, lon)
     "lincoln": ("Lincoln", 53.23, -0.54),
     "basingstoke": ("Basingstoke", 51.27, -1.09),
 }
+KINDLE = "basingstoke"           # which location kindle.png shows
+
+HEARTBEAT = "/var/log/raindash/heartbeat.log"   # written by nginx on each Kindle fetch
+LOW_BATTERY = 20                 # % - below this (and not charging) show a warning
 TZ = "Europe/London"
 MODEL = "ukmo_seamless"          # UKV 2 km over the UK, Global 10 km beyond
 ROTATE = 90                      # 90 or 270 depending on which way the Kindle sits
@@ -83,6 +93,33 @@ def window(pts, now):
     return keep, now, end
 
 
+def load_config():
+    global KINDLE
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "locations.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            cfg = json.load(f)
+        LOCATIONS.clear()
+        LOCATIONS.update({k: tuple(v) for k, v in cfg["locations"].items()})
+        KINDLE = cfg.get("kindle", KINDLE)
+
+
+def battery(now, path):
+    """Battery % and charging flag from the newest heartbeat, or None if stale/missing."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 2048))
+            line = f.read().decode(errors="ignore").strip().splitlines()[-1]
+        f = dict(p.split("=", 1) for p in line.split() if "=" in p)
+        seen = datetime.fromisoformat(line.split()[0])
+        if now - seen > timedelta(hours=1) or not f.get("bat", "").isdigit():
+            return None
+        return int(f["bat"]), f.get("chg") == "1"
+    except (OSError, IndexError, ValueError):
+        return None
+
+
 # ---- curve smoothing (monotone cubic: no overshoot below zero) ---------------
 def monotone(xs, ys, steps=8):
     n = len(xs)
@@ -135,7 +172,7 @@ def font(size, bold=False):
         return ImageFont.load_default(size * SS)
 
 
-def render(pts, now, end, out, place):
+def render(pts, now, end, out, place, bat=None):
     img = Image.new("L", (W * SS, H * SS), 255)
     g = ImageDraw.Draw(img)
     S = lambda v: int(round(v * SS))
@@ -148,8 +185,18 @@ def render(pts, now, end, out, place):
 
     # header
     g.text((S(L - 40), S(20)), headline(pts, now, end), font=font(34, True), fill=0)
-    g.text((S(L - 40), S(66)), f"{place}  ·  rain, mm per hour", font=font(18), fill=85)
-    g.text((S(R), S(66)), f"updated {now:%H:%M}", font=font(18), fill=85, anchor="ra")
+    status = f"updated {now:%H:%M}"
+    if bat:
+        status += f"  ·  battery {bat[0]}%" + (" (charging)" if bat[1] else "")
+    g.text((S(R), S(66)), status, font=font(18), fill=85, anchor="ra")
+    if bat and bat[0] < LOW_BATTERY and not bat[1]:
+        # low battery: swap the subtitle for a black banner that's hard to miss
+        msg = f"Low battery {bat[0]}% - please plug me in"
+        box = g.textbbox((S(L - 40), S(66)), msg, font=font(18, True))
+        g.rectangle((box[0] - S(8), box[1] - S(5), box[2] + S(8), box[3] + S(5)), fill=0)
+        g.text((S(L - 40), S(66)), msg, font=font(18, True), fill=255)
+    else:
+        g.text((S(L - 40), S(66)), f"{place}  ·  rain, mm per hour", font=font(18), fill=85)
 
     # gridlines + y labels
     for mm, label in Y_TICKS:
@@ -197,13 +244,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("outdir", nargs="?", default=".")
     ap.add_argument("--demo", action="store_true", help="use synthetic data")
+    ap.add_argument("--heartbeat", default=HEARTBEAT, help="nginx heartbeat log")
     a = ap.parse_args()
+    load_config()
     failed = False
     for slug, (place, lat, lon) in LOCATIONS.items():
         now = datetime.now(ZoneInfo(TZ))
         try:
             pts, now, end = demo(now) if a.demo else fetch(now, lat, lon)
             render(pts, now, end, os.path.join(a.outdir, f"rain-{slug}.png"), place)
+            if slug == KINDLE:
+                render(pts, now, end, os.path.join(a.outdir, "kindle.png"), place,
+                       battery(now, a.heartbeat))
         except Exception as e:  # one bad location shouldn't block the other
             print(f"{slug}: {e}", file=sys.stderr)
             failed = True
