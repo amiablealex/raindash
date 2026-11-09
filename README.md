@@ -1,6 +1,9 @@
+
 # raindash
 
 A 24-hour rain forecast chart for a jailbroken Kindle Touch, for leaving on a window sill.
+
+<img width="534" height="454" alt="Screenshot 2026-11-09 101646" src="https://github.com/user-attachments/assets/8918add0-b330-468b-a9c2-2ad9ffe65894" />
 
 ![preview](preview.png)
 
